@@ -87,19 +87,6 @@ def main(_):
   if FLAGS.check_nans:
     tf.debugging.enable_check_numerics()
 
-  if FLAGS.quantize:
-    # TODO: Quantization-aware training doesn't have a TF2 story yet in this
-    # example. Since deployment targets TFLite, the intended follow-up is to
-    # train a float model as usual and then apply
-    # tf.lite.TFLiteConverter post-training quantization (or, if that isn't
-    # accurate enough, quantization-aware training via
-    # tensorflow_model_optimization) at export time -- see the matching TODO
-    # in freeze.py for where that conversion would happen.
-    raise Exception(
-        '--quantize is not yet supported for TF2 training. See the TODO '
-        'comment above main() in train.py for the intended follow-up '
-        '(TFLite post-training quantization).')
-
   # Begin by making sure we have the training data we need. If you already have
   # training data of your own, use `--data_url= ` on the command line to avoid
   # downloading.
@@ -136,6 +123,11 @@ def main(_):
       boundaries=step_boundaries, values=learning_rates_list)
 
   model = models.create_model(model_settings, FLAGS.model_architecture)
+  if FLAGS.quantize:
+    # Wrap the model with fake-quant layers now, before the optimizer and
+    # checkpoint are set up below, so training (and the saved checkpoint)
+    # operates on the quantization-aware model rather than the float one.
+    model = models.quantize_model_for_training(model, FLAGS.model_architecture)
 
   if FLAGS.optimizer == 'gradient_descent':
     optimizer = tf.keras.optimizers.SGD(learning_rate=lr_schedule)
@@ -425,7 +417,9 @@ if __name__ == '__main__':
       '--quantize',
       type=bool,
       default=False,
-      help='Whether to train the model for eight-bit deployment')
+      help='Whether to train the model for eight-bit deployment using '
+      'quantization-aware training (requires the '
+      'tensorflow_model_optimization pip package)')
   parser.add_argument(
       '--preprocess',
       type=str,

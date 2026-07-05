@@ -14,10 +14,17 @@
 # ==============================================================================
 """Tests for speech commands models."""
 
+import unittest
+
 import tensorflow as tf
 
 from tensorflow.examples.speech_commands import models
 from tensorflow.python.platform import test
+
+requires_tfmot = unittest.skipIf(
+    models.tfmot is None,
+    "This test requires the tensorflow_model_optimization pip package:\n"
+    "    `pip install tensorflow-model-optimization`")
 
 
 class ModelsTest(test.TestCase):
@@ -92,6 +99,23 @@ class ModelsTest(test.TestCase):
     with self.assertRaises(Exception) as e:
       models.create_model(model_settings, "bad_architecture")
     self.assertIn("not recognized", str(e.exception))
+
+  @requires_tfmot
+  def testQuantizeModelForTrainingConv(self):
+    model_settings = self._modelSettings()
+    model = models.create_model(model_settings, "conv")
+    quantized_model = models.quantize_model_for_training(model, "conv")
+    self.assertIsInstance(quantized_model, tf.keras.Model)
+    fingerprint_input = tf.zeros([1, model_settings["fingerprint_size"]])
+    logits = quantized_model(fingerprint_input, training=False)
+    self.assertEqual([1, model_settings["label_count"]], logits.shape.as_list())
+
+  def testQuantizeModelForTrainingLowLatencySvdfNotSupported(self):
+    model_settings = self._modelSettings()
+    model = models.create_model(model_settings, "low_latency_svdf")
+    with self.assertRaises(Exception) as e:
+      models.quantize_model_for_training(model, "low_latency_svdf")
+    self.assertIn("not yet supported", str(e.exception))
 
 
 if __name__ == "__main__":

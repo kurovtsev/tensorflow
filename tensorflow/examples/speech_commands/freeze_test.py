@@ -15,10 +15,19 @@
 """Tests for data input for speech commands."""
 
 import os.path
+import unittest
+
+import tensorflow as tf
 
 from tensorflow.examples.speech_commands import freeze
+from tensorflow.examples.speech_commands import models
 from tensorflow.python.framework import convert_to_constants
 from tensorflow.python.platform import test
+
+requires_tfmot = unittest.skipIf(
+    models.tfmot is None,
+    "This test requires the tensorflow_model_optimization pip package:\n"
+    "    `pip install tensorflow-model-optimization`")
 
 
 class FreezeTest(test.TestCase):
@@ -122,6 +131,43 @@ class FreezeTest(test.TestCase):
     # than remaining as ReadVariableOp/VarHandleOp nodes.
     ops = [node.op for node in frozen_func.graph.as_graph_def().node]
     self.assertNotIn('VarHandleOp', ops)
+
+  @requires_tfmot
+  def testCreateQuantizedTfliteModel(self):
+    model_settings = models.prepare_model_settings(
+        label_count=4,
+        sample_rate=16000,
+        clip_duration_ms=1000,
+        window_size_ms=30,
+        window_stride_ms=10,
+        feature_bin_count=40,
+        preprocess='mfcc')
+    model = models.create_model(model_settings, 'conv')
+    model.build(input_shape=(None, model_settings['fingerprint_size']))
+    model = models.quantize_model_for_training(model, 'conv')
+
+    tmp_dir = self.get_temp_dir()
+    checkpoint = tf.train.Checkpoint(model=model)
+    checkpoint_path = checkpoint.save(os.path.join(tmp_dir, 'ckpt'))
+
+    tflite_model = freeze.create_quantized_tflite_model(
+        model_settings, 'conv', checkpoint_path)
+    self.assertIsInstance(tflite_model, bytes)
+    self.assertGreater(len(tflite_model), 0)
+
+  def testCreateQuantizedTfliteModelLowLatencySvdfNotSupported(self):
+    model_settings = models.prepare_model_settings(
+        label_count=4,
+        sample_rate=16000,
+        clip_duration_ms=1000,
+        window_size_ms=30,
+        window_stride_ms=10,
+        feature_bin_count=40,
+        preprocess='mfcc')
+    with self.assertRaises(Exception) as e:
+      freeze.create_quantized_tflite_model(model_settings, 'low_latency_svdf',
+                                           '')
+    self.assertIn('not yet supported', str(e.exception))
 
 
 if __name__ == '__main__':
