@@ -33,6 +33,13 @@ The resulting graph has an input for WAV-encoded data named 'wav_data', one for
 raw PCM data (as floats in the range -1.0 to 1.0) called 'decoded_sample_data',
 and the output is called 'labels_softmax'.
 
+If --quantize is set, the checkpoint must have been produced by `train.py
+--quantize` (quantization-aware training), and this instead writes a fully
+int8-quantized .tflite model to --output_file, taking just the extracted
+fingerprint as input (no WAV/spectrogram/MFCC ops -- those aren't part of
+TFLite's op set, so feature extraction has to happen off-model on-device; see
+wav_to_features.py). --save_format is ignored in that case.
+
 """
 import argparse
 import os.path
@@ -199,19 +206,60 @@ def save_saved_model(file_name, model, serve_concrete_fn):
       })
 
 
+def create_quantized_tflite_model(model_settings, model_architecture,
+                                  start_checkpoint):
+  """Builds a quantization-aware model, restores it, and converts to .tflite.
+
+  Unlike create_inference_graph (used for the float graph_def/saved_model
+  export), this converts just the fingerprint->logits model, without the WAV
+  decode / spectrogram / MFCC / micro-frontend preprocessing pipeline: those
+  ops aren't part of TFLite's built-in op set, so on-device deployments run
+  feature extraction separately (in C++; see wav_to_features.py) and feed
+  only the fingerprint tensor into the .tflite model.
+
+  The returned model must have been trained with quantization-aware training
+  (train.py --quantize), i.e. built with the same
+  models.quantize_model_for_training wrapping, so the checkpoint's variables
+  line up with this model's fake-quant layers.
+
+  Args:
+    model_settings: Dictionary of information about the model.
+    model_architecture: Name of the kind of model that was trained.
+    start_checkpoint: Path to the trained checkpoint to restore.
+
+  Returns:
+    A quantized .tflite model, as bytes.
+  """
+  model = models.create_model(model_settings, model_architecture)
+  model.build(input_shape=(None, model_settings['fingerprint_size']))
+  model = models.quantize_model_for_training(model, model_architecture)
+
+  checkpoint = tf.train.Checkpoint(model=model)
+  checkpoint.restore(start_checkpoint).expect_partial()
+
+  converter = tf.lite.TFLiteConverter.from_keras_model(model)
+  converter.optimizations = [tf.lite.Optimize.DEFAULT]
+  return converter.convert()
+
+
 def main(_):
+  words_list = input_data.prepare_words_list(FLAGS.wanted_words.split(','))
+  model_settings = models.prepare_model_settings(
+      len(words_list), FLAGS.sample_rate, FLAGS.clip_duration_ms,
+      FLAGS.window_size_ms, FLAGS.window_stride_ms, FLAGS.feature_bin_count,
+      FLAGS.preprocess)
+
   if FLAGS.quantize:
-    # TODO: Quantization-aware export doesn't have a TF2 story yet in this
-    # example. Since deployment targets TFLite, the intended follow-up is to
-    # freeze the float model as usual (below) and then run it through
-    # tf.lite.TFLiteConverter's post-training quantization (or, if that isn't
-    # accurate enough, retrain with quantization-aware training via
-    # tensorflow_model_optimization and freeze that instead) -- see the
-    # matching TODO in train.py.
-    raise Exception(
-        '--quantize is not yet supported when exporting for TF2. See the '
-        'TODO comment in main() in freeze.py for the intended follow-up '
-        '(TFLite post-training quantization).')
+    # The quantized path always produces a .tflite file at --output_file,
+    # regardless of --save_format: that's the only artifact format that
+    # actually encodes int8 quantization in a way a real runtime can use.
+    tflite_model = create_quantized_tflite_model(
+        model_settings, FLAGS.model_architecture, FLAGS.start_checkpoint)
+    with open(FLAGS.output_file, 'wb') as f:
+      f.write(tflite_model)
+    tf.get_logger().info('Saved quantized tflite model to %s',
+                         FLAGS.output_file)
+    return
 
   # Create the model and load its trained weights.
   model, serve_fn = create_inference_graph(
@@ -290,7 +338,9 @@ if __name__ == '__main__':
       '--quantize',
       type=bool,
       default=False,
-      help='Whether to train the model for eight-bit deployment')
+      help='Whether to export a fully int8-quantized .tflite model from a '
+      'checkpoint produced by `train.py --quantize` (requires the '
+      'tensorflow_model_optimization pip package)')
   parser.add_argument(
       '--preprocess',
       type=str,

@@ -18,6 +18,14 @@ import math
 
 import tensorflow as tf
 
+# If it's available, load the quantization-aware training support. If this
+# doesn't work, `--quantize` will raise a clear error instead of silently
+# training an unquantized model.
+try:
+  import tensorflow_model_optimization as tfmot  # pylint:disable=g-import-not-at-top
+except ImportError:
+  tfmot = None
+
 
 def _next_power_of_two(x):
   """Calculates the smallest enclosing power of two for an input.
@@ -131,6 +139,48 @@ def create_model(model_settings, model_architecture):
                     '" not recognized, should be one of "single_fc", "conv",' +
                     ' "low_latency_conv, "low_latency_svdf",' +
                     ' "tiny_conv", or "tiny_embedding_conv"')
+
+
+def quantize_model_for_training(model, model_architecture):
+  """Wraps a model with fake-quant layers for quantization-aware training.
+
+  This is the TF2 replacement for the original TF1
+  tf.contrib.quantize.create_training_graph(quant_delay=0): both make the
+  model learn to tolerate 8-bit precision by simulating quantization effects
+  (via fake-quant ops) during training, so it can later be converted to a
+  fully int8 model (e.g. via the TFLiteConverter) with minimal accuracy loss.
+  tf.contrib.quantize itself has no TF2 equivalent, so this uses
+  tensorflow_model_optimization (tfmot), the actively-maintained successor
+  Google recommends for this exact migration.
+
+  Args:
+    model: The float tf.keras.Model returned by create_model.
+    model_architecture: The architecture name that was used to build `model`.
+
+  Returns:
+    A quantization-aware tf.keras.Model with the same input/output shapes,
+    ready to train (or to restore trained weights into) exactly like the
+    float model.
+
+  Raises:
+    ImportError: If the tensorflow_model_optimization package isn't
+      installed.
+    Exception: If model_architecture uses a custom layer tfmot doesn't know
+      how to quantize out of the box (currently: low_latency_svdf's
+      SVDFLayer, which would need a custom
+      tfmot.quantization.keras.QuantizeConfig).
+  """
+  if model_architecture == 'low_latency_svdf':
+    raise Exception(
+        '--quantize is not yet supported for low_latency_svdf: SVDFLayer is '
+        'a custom Keras layer and needs a tfmot QuantizeConfig before '
+        'tfmot.quantization.keras.quantize_model() can wrap it. TODO: add '
+        'one if this architecture needs quantized deployment.')
+  if tfmot is None:
+    raise ImportError(
+        '--quantize requires the tensorflow_model_optimization package. '
+        'Install it with `pip install tensorflow-model-optimization`.')
+  return tfmot.quantization.keras.quantize_model(model)
 
 
 def create_single_fc_model(model_settings):
