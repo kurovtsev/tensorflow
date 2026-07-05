@@ -229,7 +229,7 @@ def main(_):
           (training_step, learning_rate_value, train_accuracy.result() * 100,
            loss_value))
 
-      val_accuracy.reset_states()
+      val_accuracy.reset_state()
       set_size = audio_processor.set_size('validation')
       total_conf_matrix = np.zeros((label_count, label_count), dtype=np.int32)
       for i in range(0, set_size, FLAGS.batch_size):
@@ -257,11 +257,11 @@ def main(_):
       save_path = checkpoint_manager.save(checkpoint_number=training_step)
       tf.get_logger().info('Saved checkpoint to "%s"' % save_path)
 
-    train_accuracy.reset_states()
+    train_accuracy.reset_state()
 
   set_size = audio_processor.set_size('testing')
   tf.get_logger().info('set_size=%d' % set_size)
-  test_accuracy.reset_states()
+  test_accuracy.reset_state()
   total_conf_matrix = np.zeros((label_count, label_count), dtype=np.int32)
   for i in range(0, set_size, FLAGS.batch_size):
     test_fingerprints, test_ground_truth = audio_processor.get_data(
