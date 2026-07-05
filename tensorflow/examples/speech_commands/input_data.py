@@ -438,12 +438,19 @@ class AudioProcessor(object):
                        ' "average", or "micro")' % (preprocess))
 
     if self.summary_writer_ is not None and step is not None:
+      # tf.summary.image requires a rank-4 [batch, height, width, channels]
+      # tensor. spectrogram/output can come back as rank 2 ([time, width]) or
+      # rank 3 ([channels, time, width]) depending on preprocess mode, so
+      # reshape generically instead of assuming a fixed rank.
+      def _as_image(tensor):
+        width = tensor.shape[-1]
+        return tf.reshape(tensor, [1, -1, width, 1])
+
       with self.summary_writer_.as_default():
         tf.summary.image(
-            'spectrogram', tf.expand_dims(spectrogram, -1), step=step,
-            max_outputs=1)
+            'spectrogram', _as_image(spectrogram), step=step, max_outputs=1)
         tf.summary.image(
-            preprocess, tf.expand_dims(output, -1), step=step, max_outputs=1)
+            preprocess, _as_image(output), step=step, max_outputs=1)
 
     return output
 
